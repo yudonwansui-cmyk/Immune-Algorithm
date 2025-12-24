@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>负选择算法动画演示 (完整版)</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; text-align: center; background-color: #f4f7f9; margin: 0; padding: 20px; }
+        #container { display: flex; justify-content: center; align-items: flex-start; gap: 30px; flex-wrap: wrap; }
+        canvas { border: 2px solid #ccc; background-color: #fff; cursor: crosshair; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+        #controls { width: 280px; padding: 20px; background: #fff; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+        button { width: 100%; padding: 12px 20px; font-size: 16px; font-weight: bold; cursor: pointer; border: none; background-color: #007bff; color: white; border-radius: 5px; transition: background-color 0.3s; margin-bottom: 20px; }
+        button:hover { background-color: #0056b3; }
+        button:disabled { background-color: #aaa; cursor: not-allowed; }
+        label { font-weight: bold; display: block; margin-bottom: 8px; text-align: left; }
+        input[type="range"] { width: 100%; }
+        h1 { color: #333; }
+        p { color: #555; line-height: 1.6; }
+        .legend { text-align: left; margin-top: 15px; }
+        .legend p { margin: 5px 0; }
+        #status-container { margin-top: 20px; padding: 10px; background-color: #e9ecef; border-radius: 5px; }
+        #status { font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h1>负选择算法动画演示 (完整版)</h1>
+    <p>第一阶段：训练检测器。第二阶段：点击画布，检测新细胞。</p>
+    <div id="container">
+        <canvas id="demoCanvas" width="500" height="500"></canvas>
+        <div id="controls">
+            <button id="startButton">1. 开始训练</button>
+
+            <div>
+                <label for="radiusSlider">检测器半径 (r): <span id="radiusValue">25</span></label>
+                <input type="range" id="radiusSlider" min="10" max="50" value="25">
+            </div>
+
+            <div class="legend">
+                <p><b>图例:</b></p>
+                <p><span style="color:#007bff;">&#9679;</span> 蓝色圆点: "自我" (正常样本)</p>
+                <p><span style="color:gray;">&#9632;</span> 灰色方块: 候选检测器</p>
+                <p><span style="color:red;">&#10007;</span> 红色闪烁: 被淘汰</p>
+                <p><span style="color:green;">&#9632;</span> 绿色方块: 成熟检测器</p>
+                <p><span style="color:orange;">&#9679;</span> 黄色圆点: 新细胞 (正常)</p>
+                <p><span style="color:red;">&#9679;</span> 红色圆点: 新细胞 (异常)</p>
+            </div>
+
+            <div id="status-container">
+                <p><b>状态:</b> <span id="status">准备就绪</span></p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('demoCanvas');
+        const ctx = canvas.getContext('2d');
+        const radiusSlider = document.getElementById('radiusSlider');
+        const radiusValue = document.getElementById('radiusValue');
+        const startButton = document.getElementById('startButton');
+        const statusSpan = document.getElementById('status');
+
+        let selfSamples = [];
+        let detectors = [];
+        let animationFrameId;
+        let mode = 'idle'; // 'idle', 'training', 'detecting'
+
+        const NUM_SELF_SAMPLES = 50;
+        const TARGET_DETECTORS = 100;
+        let DETECTOR_RADIUS = parseInt(radiusSlider.value);
+
+        radiusSlider.oninput = function() {
+            DETECTOR_RADIUS = parseInt(this.value);
+            radiusValue.textContent = this.value;
+            if (mode === 'idle') init();
+        }
+
+        function distance(p1, p2) {
+            return Math.sqrt((p1.x - p2.x)**2 + (p1.y - p2.y)**2);
+        }
+
+        // --- 绘图函数 ---
+        function drawAll() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            // 绘制"自我"样本
+            selfSamples.forEach(s => drawCircle(s.x, s.y, 5, '#007bff'));
+            // 绘制成熟检测器
+            detectors.forEach(d => drawSquare(d.x, d.y, 10, 'green'));
+        }
+
+        function drawCircle(x, y, radius, color) {
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.arc(x, y, radius, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        function drawSquare(x, y, size, color) {
+            ctx.fillStyle = color;
+            ctx.fillRect(x - size / 2, y - size / 2, size, size);
+        }
+
+        // --- 核心逻辑 ---
+        function init() {
+            cancelAnimationFrame(animationFrameId);
+            mode = 'idle';
+            startButton.disabled = false;
+            startButton.textContent = '1. 开始训练';
+            statusSpan.textContent = "准备就绪";
+
+            selfSamples = Array.from({ length: NUM_SELF_SAMPLES }, () => ({
+                x: Math.random() * canvas.width,
+                y: Math.random() * canvas.height
+            }));
+            detectors = [];
+            drawAll();
+        }
+
+        function trainStep() {
+            if (detectors.length >= TARGET_DETECTORS) {
+                mode = 'detecting';
+                startButton.disabled = true;
+                startButton.textContent = '训练完成';
+                statusSpan.textContent = "训练完成！请点击画布进行检测。";
+                drawAll(); // Final draw
+                return;
+            }
+
+            const candidate = { x: Math.random() * canvas.width, y: Math.random() * canvas.height };
+
+            let isClashing = false;
+            for (const sample of selfSamples) {
+                if (distance(candidate, sample) < DETECTOR_RADIUS) {
+                    isClashing = true;
+                    break;
+                }
+            }
+
+            drawAll();
+
+            if (isClashing) {
+                // 淘汰动画
+                drawSquare(candidate.x, candidate.y, 10, 'red');
+            } else {
+                // 接受
+                detectors.push(candidate);
+                drawSquare(candidate.x, candidate.y, 10, 'lime'); // Use a bright color for new detector
+            }
+
+            statusSpan.textContent = `训练中... 已生成 ${detectors.length} / ${TARGET_DETECTORS} 个检测器`;
+            animationFrameId = requestAnimationFrame(trainStep);
+        }
+
+        function detect(event) {
+            if (mode !== 'detecting') return;
+
+            const rect = canvas.getBoundingClientRect();
+            const newCell = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+
+            let detected = false;
+            let triggeringDetector = null;
+
+            for (const detector of detectors) {
+                if (distance(newCell, detector) < DETECTOR_RADIUS) {
+                    detected = true;
+                    triggeringDetector = detector;
+                    break;
+                }
+            }
+
+            drawAll(); // Redraw base state
+
+            if (detected) {
+                // 异常
+                drawCircle(newCell.x, newCell.y, 7, 'red');
+                // 高亮触发的检测器
+                drawSquare(triggeringDetector.x, triggeringDetector.y, 12, 'yellow');
+                statusSpan.textContent = "检测结果：异常！被检测器捕获。";
+
+            } else {
+                // 正常
+                drawCircle(newCell.x, newCell.y, 7, 'orange');
+                 statusSpan.textContent = "检测结果：正常。";
+            }
+        }
+
+        // --- 事件监听 ---
+        startButton.addEventListener('click', () => {
+            init();
+            mode = 'training';
+            startButton.disabled = true;
+            startButton.textContent = '训练中...';
+            statusSpan.textContent = '训练中...';
+            trainStep();
+        });
+
+        canvas.addEventListener('click', detect);
+
+        // 初始加载
+        init();
+    </script>
+</body>
+</html>

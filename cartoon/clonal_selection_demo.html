@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>克隆选择算法动画演示 (修复优化版)</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; text-align: center; background-color: #f4f7f9; margin: 0; padding: 20px; }
+        #container { display: flex; justify-content: center; align-items: flex-start; gap: 30px; flex-wrap: wrap; }
+        canvas { border: 2px solid #ccc; background-color: #fff; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+        #controls { width: 300px; padding: 20px; background: #fff; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+        button { width: 100%; padding: 12px 20px; font-size: 16px; font-weight: bold; cursor: pointer; border: none; background-color: #28a745; color: white; border-radius: 5px; transition: background-color 0.3s; margin-bottom: 20px; }
+        button:hover { background-color: #218838; }
+        button:disabled { background-color: #aaa; cursor: not-allowed; }
+        h1 { color: #333; }
+        p { color: #555; line-height: 1.6; }
+        .info-box { text-align: left; margin-top: 15px; }
+        .info-box p { margin: 8px 0; }
+        #status-container { margin-top: 20px; padding: 10px; background-color: #e9ecef; border-radius: 5px; }
+        #status { font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h1>克隆选择算法动画演示 (修复优化版)</h1>
+    <p>目标：寻找复杂的 Rastrigin 函数的全局最小值（由红星 ⭐ 标记）。</p>
+    <div id="container">
+        <canvas id="demoCanvas" width="500" height="500"></canvas>
+        <div id="controls">
+            <button id="startButton">1. 开始进化</button>
+            <div class="info-box">
+                <p><b>图例:</b></p>
+                <p><span style="color:red;">&#11088;</span> 红星: 全局最优解 (0, 0)</p>
+                <p><span style="color:yellow;">&#9679;</span> 黄色圆点: 抗体 (候选解)</p>
+                <p>&nbsp;&nbsp;&nbsp;<em>(圆点越大 = 亲和度越高)</em></p>
+            </div>
+            <div id="status-container">
+                <p><b>状态:</b> <span id="status">准备就绪</span></p>
+                <p><b>代数:</b> <span id="generation">0</span></p>
+                <p><b>最佳函数值:</b> <span id="bestFitness">N/A</span></p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('demoCanvas');
+        const ctx = canvas.getContext('2d');
+        const startButton = document.getElementById('startButton');
+        const generationSpan = document.getElementById('generation');
+        const bestFitnessSpan = document.getElementById('bestFitness');
+        const statusSpan = document.getElementById('status');
+
+        // --- 算法配置 ---
+        const POP_SIZE = 50;
+        const MAX_GENERATIONS = 300;
+        const CLONE_SCALE = 10;
+        const MUTATION_RATE_BASE = 0.8; // 基础变异率
+
+        // --- 函数与画布配置 ---
+        const BOUNDS = { min: -5.12, max: 5.12 };
+        const GLOBAL_MINIMUM = { x: 0, y: 0 };
+        let population = [];
+        let animationFrameId;
+        let generation = 0;
+        let bestFitness = Infinity;
+
+        // --- Rastrigin 函数 ---
+        function rastrigin(p) { /* ... (函数不变) ... */
+            const d = 2; let sum = 10 * d; const solution = [p.x, p.y];
+            for (let i = 0; i < d; i++) { sum += solution[i]**2 - 10 * Math.cos(2 * Math.PI * solution[i]); }
+            return sum;
+        }
+
+        // --- 坐标转换 ---
+        function toDomain(val) { /* ... (函数不变) ... */ return (val / canvas.width) * (BOUNDS.max - BOUNDS.min) + BOUNDS.min; }
+        function toCanvas(val) { /* ... (函数不变) ... */ return ((val - BOUNDS.min) / (BOUNDS.max - BOUNDS.min)) * canvas.width; }
+
+        // --- 绘图函数 ---
+        let backgroundRendered = false;
+        function drawBackground() { /* ... (函数不变) ... */
+             if (backgroundRendered) return;
+            const step = 5;
+            for (let i = 0; i < canvas.width; i += step) {
+                for (let j = 0; j < canvas.height; j += step) {
+                    const val = rastrigin({ x: toDomain(i), y: toDomain(j) });
+                    const colorVal = Math.max(0, 255 - val * 4);
+                    ctx.fillStyle = `rgb(${colorVal}, ${colorVal}, 255)`;
+                    ctx.fillRect(i, j, step, step);
+                }
+            }
+            const centerX = toCanvas(GLOBAL_MINIMUM.x); const centerY = toCanvas(GLOBAL_MINIMUM.y);
+            ctx.fillStyle = 'red'; ctx.font = '24px serif'; ctx.fillText('⭐', centerX - 12, centerY + 8);
+            backgroundRendered = true;
+        }
+
+        function draw() { /* ... (函数不变) ... */
+            if (!backgroundRendered) drawBackground(); else ctx.clearRect(0, 0, canvas.width, canvas.height);
+            drawBackground();
+
+            population.forEach(p => {
+                const fitness = rastrigin(p);
+                const radius = Math.max(3, 15 - fitness * 0.2);
+                const canvasX = toCanvas(p.x); const canvasY = toCanvas(p.y);
+                ctx.beginPath(); ctx.arc(canvasX, canvasY, radius, 0, 2 * Math.PI);
+                ctx.fillStyle = 'rgba(255, 255, 0, 0.85)'; ctx.fill();
+                ctx.strokeStyle = 'black'; ctx.lineWidth = 1; ctx.stroke();
+            });
+        }
+
+        // --- 核心算法逻辑 ---
+        function init() { /* ... (函数不变) ... */
+            cancelAnimationFrame(animationFrameId); backgroundRendered = false; generation = 0; bestFitness = Infinity;
+            population = [];
+            for (let i = 0; i < POP_SIZE; i++) { population.push({ x: Math.random() * (BOUNDS.max - BOUNDS.min) + BOUNDS.min, y: Math.random() * (BOUNDS.max - BOUNDS.min) + BOUNDS.min }); }
+            statusSpan.textContent = '准备就绪'; generationSpan.textContent = 0; bestFitnessSpan.textContent = 'N/A';
+            draw();
+        }
+
+        function evolve() {
+            if (generation >= MAX_GENERATIONS) {
+                statusSpan.textContent = '进化完成！';
+                startButton.disabled = false;
+                draw(); // Final draw
+                return;
+            }
+
+            // 1. 评估和排序
+            population.sort((a, b) => rastrigin(a) - rastrigin(b));
+
+            bestFitness = rastrigin(population[0]);
+            bestFitnessSpan.textContent = bestFitness.toFixed(4);
+            generationSpan.textContent = generation;
+
+            // 2. 克隆
+            let clones = [];
+            for (let i = 0; i < population.length; i++) {
+                const numClones = Math.round(CLONE_SCALE * (population.length - i) / population.length);
+                for (let j = 0; j < numClones; j++) {
+                    clones.push({ 'antibody': { ...population[i] }, 'rank': i });
+                }
+            }
+
+            // 3. 超变异
+            clones.forEach(cloneObj => {
+                const antibody = cloneObj.antibody;
+                const rank = cloneObj.rank;
+
+                // !!! 关键修复：变异强度与排名成正比 !!!
+                // 排名越靠后(rank值越大)，变异强度越大
+                const mutationFactor = MUTATION_RATE_BASE * Math.exp(rank / population.length);
+
+                antibody.x += (Math.random() - 0.5) * mutationFactor;
+                antibody.y += (Math.random() - 0.5) * mutationFactor;
+
+                antibody.x = Math.max(BOUNDS.min, Math.min(BOUNDS.max, antibody.x));
+                antibody.y = Math.max(BOUNDS.min, Math.min(BOUNDS.max, antibody.y));
+            });
+
+            // 4. 选择
+            const mutatedAntibodies = clones.map(c => c.antibody);
+            const combinedPopulation = population.concat(mutatedAntibodies);
+            combinedPopulation.sort((a, b) => rastrigin(a) - rastrigin(b));
+            population = combinedPopulation.slice(0, POP_SIZE);
+
+            draw();
+            generation++;
+            animationFrameId = setTimeout(evolve, 50); // 在 50 毫秒后执行下一代
+        }
+
+        startButton.addEventListener('click', () => {
+            init();
+            statusSpan.textContent = '进化中...';
+            startButton.disabled = true;
+            evolve();
+        });
+
+        init();
+    </script>
+</body>
+</html>
